@@ -1,0 +1,28 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: go-api
+    static_configs:
+      - targets: ['go-api:8080']
+
+  - job_name: go-worker
+    static_configs:
+      - targets:
+          - contents-ranking-go-worker-1:8081
+          - contents-ranking-go-worker-2:8081
+          - contents-ranking-go-worker-3:8081
+
+  - job_name: simulation-service
+    static_configs:
+      - targets: ['simulation-service:3000']
+
+  # Exporters: run in Docker on same network
+  - job_name: kafka-exporter
+    static_configs:
+      - targets: ['kafka-exporter:9308']
+
+  - job_name: redis-exporter
+    static_configs:
+      - targets: ['redis-exporter:9121']

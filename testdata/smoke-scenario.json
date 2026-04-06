@@ -1,0 +1,1 @@
+{"name":"smoke-test","type":"normal","users":10,"video_ids":["video1","video2","video3"],"watch_seconds":35,"ramp_up_seconds":5,"events_per_second":1,"duration_seconds":40}

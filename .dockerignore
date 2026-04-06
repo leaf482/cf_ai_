@@ -1,0 +1,13 @@
+.git
+.github
+*.md
+.env
+.env.*
+simulation-service
+dashboard
+monitoring
+*.txt
+dist
+coverage
+node_modules
+.next

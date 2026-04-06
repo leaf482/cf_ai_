@@ -1,0 +1,211 @@
+networks:
+  contents-ranking-net:
+    driver: bridge
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  kafka:
+    image: apache/kafka:latest
+    container_name: kafka-kraft
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_DOCKER://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_DOCKER://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_DOCKER:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+    networks:
+      - contents-ranking-net
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - contents-ranking-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Exporters ───────────────────────────────────────────────────────────────
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    container_name: kafka-exporter
+    ports:
+      - "9308:9308"
+    command:
+      - "--kafka.server=kafka:29092"
+    networks:
+      - contents-ranking-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: on-failure
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: redis-exporter
+    ports:
+      - "9121:9121"
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    networks:
+      - contents-ranking-net
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ── Application ────────────────────────────────────────────────────────────
+
+  go-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: go-api
+    # Host port binding removed — dashboard talks to go-api via internal Docker network.
+    # To call the API from host: docker exec or use the dashboard proxy at localhost:3002/api/go
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC: video-heartbeats
+      SERVER_PORT: "8080"
+      REDIS_ADDR: redis:6379
+    networks:
+      - contents-ranking-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  go-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC: video-heartbeats
+      REDIS_ADDR: redis:6379
+      SERVER_PORT: "8081"
+      BATCH_SIZE: "50"
+      BATCH_FLUSH_INTERVAL: "100ms"
+    networks:
+      - contents-ranking-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # No host port binding — metrics (8081) internal only for Prometheus
+
+  go-ai-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.ai-worker
+    container_name: go-ai-worker
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC: video-heartbeats
+      CLOUDFLARE_WORKER_URL: ${CLOUDFLARE_WORKER_URL}
+    networks:
+      - contents-ranking-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  simulation-service:
+    build:
+      context: ./simulation-service
+      dockerfile: Dockerfile
+    container_name: simulation-service
+    ports:
+      - "3000:3000"
+    environment:
+      RANKING_API_URL: http://go-api:8080/v1/heartbeat
+      PROMETHEUS_URL: http://prometheus:9090
+    networks:
+      - contents-ranking-net
+    depends_on:
+      go-api:
+        condition: service_started
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: dashboard
+    ports:
+      - "3002:3000"
+    environment:
+      # Server-side proxy targets
+      GO_API_URL: http://go-api:8080
+      SIMULATION_URL: http://simulation-service:3000
+      CLOUDFLARE_WORKER_URL: ${CLOUDFLARE_WORKER_URL}
+      # Client-side base URLs (use dashboard /api proxies by default)
+      NEXT_PUBLIC_GO_API_URL: /api/go
+      NEXT_PUBLIC_SIMULATION_URL: /api/sim
+    networks:
+      - contents-ranking-net
+    depends_on:
+      - go-api
+      - simulation-service
+    restart: unless-stopped
+
+  # ── Observability ────────────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    networks:
+      - contents-ranking-net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3001:3000"   # 3000 is taken by simulation-service
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./simulation-service/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./simulation-service/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./simulation-service/grafana/dashboards:/var/lib/grafana-dashboards:ro
+    networks:
+      - contents-ranking-net
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  grafana-data:

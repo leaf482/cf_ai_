@@ -1,0 +1,38 @@
+import { OnModuleDestroy } from '@nestjs/common';
+import { ScenarioConfig } from './scenario-registry';
+import { ScenarioRegistry } from './scenario-registry';
+import { CommandQueue } from './command-queue';
+import { AttributionIndex } from './attribution-index';
+import { BatchSender } from './batch-sender';
+import { EventLogService } from '../events/event-log.service';
+import { EventStreamService } from '../events/event-stream.service';
+export declare class MasterTickScheduler implements OnModuleDestroy {
+    private readonly registry;
+    private readonly commandQueue;
+    private readonly attributionIndex;
+    private readonly batchSender;
+    private readonly eventLog;
+    private readonly eventStream;
+    private readonly logger;
+    private intervalId;
+    private lastTickAtMs;
+    constructor(registry: ScenarioRegistry, commandQueue: CommandQueue, attributionIndex: AttributionIndex, batchSender: BatchSender, eventLog: EventLogService, eventStream: EventStreamService);
+    onModuleDestroy(): void;
+    start(): void;
+    stop(): void;
+    enqueueStart(scenarioId: string, name: string, config: ScenarioConfig): void;
+    enqueuePause(scenarioId: string): void;
+    enqueueResume(scenarioId: string): void;
+    enqueueStop(scenarioId: string): void;
+    enqueueSwitchPhase(scenarioId: string, config: ScenarioConfig): void;
+    enqueueSpike(scenarioId: string, multiplier: number, durationMs: number): void;
+    enqueueLoadSpike(multiplier: number, durationMs: number): void;
+    private applyCommands;
+    private isSpikeActive;
+    private scenarioRng;
+    private createSessionsForScenario;
+    private generateArrivals;
+    private updateSessionsAndBuildHeartbeats;
+    private tick;
+    getRegistry(): ScenarioRegistry;
+}
