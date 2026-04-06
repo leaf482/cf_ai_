@@ -1,3 +1,81 @@
+# cf_ai_ — Cloudflare AI Layer
+
+Real-time video ranking pipeline extended with a Cloudflare AI layer: Workers AI (Llama 3), Durable Objects for conversation memory, and an AI chat panel in the dashboard.
+
+---
+
+## Cloudflare AI Components
+
+| Component | Implementation |
+|-----------|----------------|
+| **LLM** | Workers AI — `@cf/meta/llama-3-8b-instruct` (Llama 3) |
+| **Workflow / coordination** | Cloudflare Worker (`cloudflare-worker/`) orchestrates: load history → call LLM → save history |
+| **User input (chat)** | AI chat panel in the Next.js dashboard (`AIChatPanel.tsx`) via `/api/cf` proxy |
+| **Memory / state** | `ConversationHistory` Durable Object — SQLite-backed, persists per-user conversation context |
+
+### How it fits together
+
+```
+Dashboard (chat UI)
+  └─► Next.js /api/cf proxy          (hides Worker URL from browser)
+        └─► Cloudflare Worker /chat  (Workers AI + Durable Object)
+              ├─ load history        ConversationHistory DO (per userId)
+              ├─ call LLM            Workers AI Llama 3
+              └─ save history        ConversationHistory DO
+
+Go AI Worker (cmd/ai-worker)
+  └─► Kafka topic (same events as ranking worker, separate consumer group)
+        └─► Cloudflare Worker /analyze  (async heartbeat ingestion)
+```
+
+---
+
+## Running the Cloudflare Worker
+
+### Prerequisites
+
+- [Cloudflare account](https://dash.cloudflare.com) (free plan works)
+- Node.js 18+
+- `npm install -g wrangler` then `wrangler login`
+
+### Deploy
+
+```bash
+cd cloudflare-worker
+npm install
+npx wrangler deploy
+```
+
+After deploy, Wrangler prints your Worker URL:
+
+```
+https://ranking-ai-worker.<your-subdomain>.workers.dev
+```
+
+### Try the chat endpoint directly
+
+```bash
+curl -X POST https://ranking-ai-worker.<your-subdomain>.workers.dev/chat \
+  -H "Content-Type: application/json" \
+  -d '{"userId": "demo-user", "message": "What makes a video trend quickly?"}'
+```
+
+### Use with the full dashboard (Docker)
+
+1. Copy `.env.example` to `.env`
+2. Set `CLOUDFLARE_WORKER_URL` to your deployed Worker URL
+3. Run `make up` — the dashboard chat panel will connect to the Worker automatically
+
+```bash
+cp .env.example .env
+# edit .env → CLOUDFLARE_WORKER_URL=https://ranking-ai-worker.<your-subdomain>.workers.dev
+make up
+```
+
+Open **http://localhost:3002** and use the **AI Chat** panel at the bottom of the dashboard.
+
+-----------------------------------------------------------------------------------------------------------------------------------
+
 # Contents Ranking
 
 Real-time video ranking system based on watch heartbeats. Built with Go, Kafka, Redis, NestJS simulation, and Next.js dashboard.
